@@ -72,6 +72,14 @@
       "optional": true,
       "type": "per-sample"
     },
+    "assembly-graph": {
+      "filepath": "{{ alias }}.assembly_graph.gfa",
+      "title": "Assembly graph (GFA)",
+      "description": "Assembly graph file in GFA format from Flye.",
+      "mime-type": "text/plain",
+      "optional": true,
+      "type": "per-sample"
+    },
     "variants": {
       "filepath": "{{ alias }}.medaka.vcf.gz",
       "title": "Variants VCF file",
@@ -149,6 +157,15 @@
         "assembly"
       ]
     },
+    "assembly-graph": {
+    "type": "per-sample",
+    "title": "Assembly graph",
+    "description": "Checkpoint to monitor Flye assembly graph output (GFA).",
+    "files": [
+      "assembly-graph"
+    ]
+  },
+
     "variant-calling": {
       "type": "per-sample",
       "title": "variant calling",
