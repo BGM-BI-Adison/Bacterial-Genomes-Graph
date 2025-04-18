@@ -250,3 +250,26 @@ process reportingCheckpoint {
     echo '$checkJson' > checkpoint_info.json
     """
 }
+
+process graphCheckpoint {
+  label "wf_common"
+  cpus 1
+  memory "1 GB"
+  input:
+    tuple val(meta), val(status)
+  output:
+    path "checkpoint_info.json", emit: checkpoint
+  script:
+    def files = status == 'complete' ? [ "assembly-graph": "${meta.alias}.assembly_graph.gfa" ] : [ ]
+    def checkpoint_data = [[
+            sample: "${meta.alias}",
+            checkpoint_name: "assembly-graph",
+            status: "${status}",
+            files: files
+        ]]
+    checkJson = new JsonBuilder(checkpoint_data).toPrettyString()
+    """
+    echo '$checkJson' > checkpoint_info.json
+    """
+}
+
