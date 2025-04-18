@@ -23,6 +23,7 @@ include {
     annotationCheckpoint;
     perSampleReportingCheckpoint;
     reportingCheckpoint;
+    graphCheckpoint;
 } from './modules/local/checkpoints'
 
 OPTIONAL_FILE = file("$projectDir/data/OPTIONAL_FILE")
@@ -69,7 +70,9 @@ process coverStats {
 process deNovo {
     label "wfbacterialgenomes"
     cpus params.threads
-    memory "31 GB"
+    memory { task.attempt == 1 ? "31 GB" : task.attempt == 2 ? "63 GB" : "127 GB" }
+    maxRetries 3
+    errorStrategy 'retry'
     input:
         tuple val(meta), path("reads.fastq.gz")
     output:
@@ -77,50 +80,34 @@ process deNovo {
             path("${meta.alias}.draft_assembly.fasta.gz"),
             path("${meta.alias}.flye_stats.tsv"),
             optional: true, emit: asm
+        tuple val(meta),
+            path("${meta.alias}.assembly_graph.gfa"),
+            optional: true, emit: graph
         tuple val(meta), env(COV_FAIL), emit: failed
     script:
-    // flye may fail due to low coverage; in this case we don't want to cause the whole
-    // workflow to crash --> exit with `0` and don't emit output files
-    def flye_opts = params.flye_opts ?: ""
-    def genome_size = params.flye_genome_size ? "--genome-size " + params.flye_genome_size : ""
-    def asm_coverage = params.flye_asm_coverage ? "--asm-coverage " + params.flye_asm_coverage : ""
+        def opts = [
+            params.flye_opts,
+            params.flye_genome_size ? "--genome-size ${params.flye_genome_size}" : "",
+            params.flye_asm_coverage ? "--asm-coverage ${params.flye_asm_coverage}" : ""
+        ].findAll { it }.join(" ")
     """
     COV_FAIL=0
-    FLYE_EXIT_CODE=0
-    flye $flye_opts $genome_size $asm_coverage --nano-hq reads.fastq.gz --out-dir output --threads "${task.cpus}" || \
-    FLYE_EXIT_CODE=\$?
+    flye $opts --nano-hq reads.fastq.gz --out-dir out --threads $task.cpus || EXIT_CODE=\$?
 
-    if [[ \$FLYE_EXIT_CODE -eq 0 ]]; then
-        mv output/assembly.fasta "./${meta.alias}.draft_assembly.fasta"
-        mv output/assembly_info.txt "./${meta.alias}.flye_stats.tsv"
-        bgzip "${meta.alias}.draft_assembly.fasta"
+    if [ ! -s "out/assembly.fasta" ]; then
+        echo "Assembly failed or missing output."
+        COV_FAIL=1
     else
-        # flye failed --> check the log to check why
-        edge_cov=\$(
-            grep -oP 'Mean edge coverage: \\K\\d+' output/flye.log \
-            || echo $FLYE_MIN_COVERAGE_THRESHOLD
-        )
-        ovlp_cov=\$(
-            grep -oP 'Overlap-based coverage: \\K\\d+' output/flye.log \
-            || echo $FLYE_MIN_COVERAGE_THRESHOLD
-        )
-        if [[
-            \$edge_cov -lt $FLYE_MIN_COVERAGE_THRESHOLD ||
-            \$ovlp_cov -lt $FLYE_MIN_COVERAGE_THRESHOLD
-        ]]; then
-            echo -n "Caught Flye failure due to low coverage (either mean edge cov. or "
-            echo "overlap-based cov. were below $FLYE_MIN_COVERAGE_THRESHOLD)".
-            COV_FAIL=1
-        elif grep -q "No disjointigs were assembled" output/flye.log; then
-            echo -n "Caught Flye failure due to disjointig assembly."
-            COV_FAIL=2
-        else
-            # exit a subshell with error so that the process fails
-            ( exit \$FLYE_EXIT_CODE )
-        fi
+        cp out/assembly.fasta "${meta.alias}.draft_assembly.fasta"
+        cp out/assembly_info.txt "${meta.alias}.flye_stats.tsv"
+        cp out/assembly_graph.gfa "${meta.alias}.assembly_graph.gfa" || touch "${meta.alias}.assembly_graph.gfa"
+        bgzip "${meta.alias}.draft_assembly.fasta"
     fi
     """
 }
+
+
+
 
 
 process alignReads {
@@ -550,6 +537,13 @@ workflow calling_pipeline {
         | concat (failed_samples
         | map { meta, status -> [ meta, OPTIONAL_FILE ] } ))
 
+
+        // Checkpoint 2.5 - Assembly Graph GFA
+        graph_checkpoint = graphCheckpoint(
+        deNovo.out.graph.map { meta, gfa -> [meta, "complete"] }
+        | mix(failed_samples)
+        | unique())
+
         // medaka variants
         if (params.reference_based_assembly){
             medakaInference_variant(regions_model, "variant")
@@ -712,6 +706,7 @@ workflow calling_pipeline {
         ingress_checkpoint.mix(
             alignment_checkpoint,
             assembly_checkpoint,
+            graph_checkpoint,
             variant_checkpoint,
             annotation_checkpoint,
             amr_checkpoint,
@@ -729,6 +724,7 @@ workflow calling_pipeline {
         all_out = vcf_stats.map{meta, stats -> stats}.concat(
             vcf_variant.map {meta, vcf -> vcf},
             consensus.map {meta, assembly -> assembly},
+            deNovo.out.graph.map { meta, gfa -> gfa },
             report,
             perSampleReports.map {meta, report -> report},
             prokka.map{meta, gff, gbk -> [gff, gbk]},
@@ -794,6 +790,7 @@ workflow {
     results.all_out
     | output
 }
+
 
 workflow.onComplete {
     Pinguscript.ping_complete(nextflow, workflow, params)
