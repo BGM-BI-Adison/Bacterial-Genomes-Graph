@@ -107,6 +107,20 @@ process deNovo {
 }
 
 
+process runBandage {
+    label "bandage"
+    cpus 1
+    memory "2 GB"
+    input:
+        tuple val(meta), path("${meta.alias}.assembly_graph.gfa")
+    output:
+        path("${meta.alias}_Bandage.png"), emit: bandage_graph
+    script:
+        def bandage_opts = params.bandage_opts ?: "--height 1000 --width 1000"
+    """
+    Bandage image ${meta.alias}.assembly_graph.gfa ${meta.alias}_Bandage.png $bandage_opts
+    """
+}
 
 
 
@@ -465,6 +479,7 @@ workflow calling_pipeline {
             log.info("Running Denovo assembly.")
             deNovo(input_reads.reads)
             // some samples might have failed flye due to low coverage
+            graph_images = runBandage(deNovo.out.graph)
             deNovo.out.failed.map { meta, failed ->
                 if (failed == "1") {
                     log.warn "Flye failed for sample '$meta.alias' due to low coverage."
@@ -725,6 +740,7 @@ workflow calling_pipeline {
             vcf_variant.map {meta, vcf -> vcf},
             consensus.map {meta, assembly -> assembly},
             deNovo.out.graph.map { meta, gfa -> gfa },
+            graph_images,
             report,
             perSampleReports.map {meta, report -> report},
             prokka.map{meta, gff, gbk -> [gff, gbk]},
